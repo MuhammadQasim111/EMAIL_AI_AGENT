@@ -2,7 +2,7 @@
 name = "agents"
 version = "0.1.0"
 description = "Add your description here"
-#readme = "README.md"
+readme = "README.md"
 authors = [
     { name = "Muhammad Qasim", email = "mqasim111786111@gmail.com" }
 ]
