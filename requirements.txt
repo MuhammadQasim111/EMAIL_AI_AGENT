@@ -1,5 +1,5 @@
 # agents-sdk-course-2/email-agent/requirements.txt
-chainlit
+requests
 pandas
 google-api-python-client
 google-auth-httplib2
