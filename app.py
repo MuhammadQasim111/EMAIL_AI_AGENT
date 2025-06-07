@@ -1,158 +1,104 @@
-import streamlit as st
-import os
-from typing import List, Dict, Any, Optional
-
-# Assuming 'models' and 'tools' directories are in the same parent directory as app.py
-# You might need to adjust sys.path if your project structure is different
 import sys
-sys.path.append(os.path.dirname(__file__))
-
+import os
+import chainlit as cl
+from typing import List, Dict, Any, Optional
 from models.email_models import EmailContext
 from tools.email_tools import get_gmail_service, read_recipients_from_excel, send_gmail_message
 
-# Global variable for Gmail service (can be managed better with st.session_state for persistence)
-# However, for initial setup, we'll keep it simple and re-authenticate if necessary.
 GMAIL_SERVICE = None
 
-def authenticate_gmail():
-    """Authenticates with Gmail and stores the service object."""
+@cl.on_chat_start
+async def start():
     global GMAIL_SERVICE
+    cl.user_session.set("email_context", EmailContext())
+    cl.user_session.set("current_email_message", None)
+    cl.user_session.set("recipients_list", [])
+
+    await cl.Message(
+        content="Hello! Upload an Excel file with a column named `Email` (case-insensitive)."
+    ).send()
+
     try:
-        # Streamlit doesn't have a direct equivalent of Chainlit's async make_async
-        # We assume get_gmail_service is blocking or handles its own async context.
-        # For a real deployment, consider how credentials will be handled securely.
-        st.info("Authenticating with Gmail...")
-        service = get_gmail_service()
-        if service:
-            GMAIL_SERVICE = service
-            st.success("Gmail authentication successful!")
-            return True
+        await cl.Message(content="Authenticating with Gmail...").send()
+        GMAIL_SERVICE = await cl.make_async(get_gmail_service)()
+        if GMAIL_SERVICE:
+            await cl.Message(content="Gmail authentication successful!").send()
         else:
-            st.error("**Gmail authentication failed.** Check your credentials.")
-            return False
+            await cl.Message(content="**Gmail authentication failed.** Check your credentials.").send()
     except Exception as e:
-        st.error(f"Error during Gmail authentication: {e}")
-        return False
+        await cl.Message(content=f"Error during Gmail authentication: {e}").send()
+        GMAIL_SERVICE = None
 
-def main():
-    st.set_page_config(page_title="Streamlit Email Sender", layout="centered")
-    st.title("📧 Streamlit Email Sender")
-
-    # Initialize session state variables
-    if "email_context" not in st.session_state:
-        st.session_state.email_context = EmailContext()
-    if "current_email_message" not in st.session_state:
-        st.session_state.current_email_message = ""
-    if "recipients_list" not in st.session_state:
-        st.session_state.recipients_list = []
-    if "gmail_service" not in st.session_state:
-        st.session_state.gmail_service = None
-
-    # --- Gmail Authentication ---
-    if st.session_state.gmail_service is None:
-        st.write("Before proceeding, let's authenticate with Gmail.")
-        if st.button("Authenticate Gmail"):
-            if authenticate_gmail():
-                st.session_state.gmail_service = GMAIL_SERVICE
-            else:
-                st.warning("Gmail authentication failed. Please try again.")
-
-    # Only show the rest of the app if Gmail is authenticated
-    if st.session_state.gmail_service:
-        st.success("Gmail is authenticated!")
-        st.info("Upload an Excel file with a column named `Email` (case-insensitive).")
-
-        # --- File Uploader ---
-        uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-        if uploaded_file is not None:
-            # Save the uploaded file temporarily to read it
-            file_path = os.path.join("./temp", uploaded_file.name)
-            os.makedirs("./temp", exist_ok=True)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-
-            st.write(f"Received file: {uploaded_file.name}")
-            recipients = read_recipients_from_excel(file_path)
-
-            if not recipients:
-                st.warning("No valid emails found in the Excel file.")
-                st.session_state.recipients_list = []
-            else:
-                st.session_state.recipients_list = recipients
-                st.success(f"Found {len(recipients)} recipient(s).")
-                st.write("Recipients loaded:")
-                for i, r in enumerate(recipients[:5]): # Displaying first 5 recipients
-                    st.write(f"- {r.get('email', 'N/A')}")
-                if len(recipients) > 5:
-                    st.write(f"... and {len(recipients) - 5} more.")
-
-            # Clean up the temporary file
-            os.remove(file_path)
-
-        # --- Email Message Input ---
-        st.write("---")
-        st.subheader("Compose Your Email")
-        current_message_input = st.text_area(
-            "Your Email Message",
-            value=st.session_state.current_email_message,
-            height=200,
-            key="email_message_input"
-        )
-        if current_message_input:
-            st.session_state.current_email_message = current_message_input
-            st.info("Message saved. Click 'Send Emails' when ready.")
-
-        # --- Send Emails Button ---
-        if st.button("Send Emails"):
-            if not st.session_state.gmail_service:
-                st.error("Gmail not authenticated. Please authenticate first.")
-                return
-            if not st.session_state.recipients_list:
-                st.warning("No recipients found. Please upload an Excel file first.")
-                return
-            if not st.session_state.current_email_message:
-                st.warning("No message provided. Please type your message in the text area.")
+@cl.on_message
+async def main(message: cl.Message):
+    # Handle file upload
+    if message.elements:
+        for element in message.elements:
+            if element.type == "file":
+                file_path = element.path
+                await cl.Message(content=f"Received file: {element.name}").send()
+                recipients = await cl.make_async(read_recipients_from_excel)(file_path)
+                if not recipients:
+                    await cl.Message(content="No valid emails found in the Excel file.").send()
+                    return
+                cl.user_session.set("recipients_list", recipients)
+                await cl.Message(content=f"Found {len(recipients)} recipient(s). Now, type your message in the chat.").send()
                 return
 
-            st.write(f"Sending message to {len(st.session_state.recipients_list)} recipients...")
-            sent_count = 0
-            failed_recipients = []
-            progress_bar = st.progress(0)
+    # If a message is provided and recipients are set, store the message
+    recipients_list = cl.user_session.get("recipients_list", [])
+    if recipients_list and not cl.user_session.get("current_email_message"):
+        cl.user_session.set("current_email_message", message.content)
+        await cl.Message(content="Message saved. Type `send emails` to send it to all recipients.").send()
+        return
 
-            for i, recipient_data in enumerate(st.session_state.recipients_list):
-                recipient_email = recipient_data.get('email')
-                if not recipient_email:
-                    failed_recipients.append(str(recipient_data))
-                    continue
+    # If user types 'send emails', send the message to all recipients
+    if message.content.strip().lower() == "send emails":
+        email_message = cl.user_session.get("current_email_message")
+        if not GMAIL_SERVICE:
+            await cl.Message(content="Gmail not authenticated. Restart the chat.").send()
+            return
+        if not recipients_list:
+            await cl.Message(content="No recipients found. Upload an Excel file first.").send()
+            return
+        if not email_message:
+            await cl.Message(content="No message provided. Type your message in the chat first.").send()
+            return
 
-                try:
-                    # send_gmail_message is assumed to be blocking, if it's async
-                    # you'll need to wrap it with asyncio.run() or similar in a non-async context
-                    sent_status = send_gmail_message(
-                        st.session_state.gmail_service, 'me', recipient_email, "Important Message", st.session_state.current_email_message
-                    )
-                    if sent_status:
-                        sent_count += 1
-                        st.success(f"✅ Sent to: `{recipient_email}`")
-                    else:
-                        failed_recipients.append(recipient_email)
-                        st.error(f"❌ Failed to send to: `{recipient_email}`")
-                except Exception as e:
+        await cl.Message(content=f"Sending message to {len(recipients_list)} recipients...").send()
+        sent_count = 0
+        failed_recipients = []
+        for recipient_data in recipients_list:
+            recipient_email = recipient_data.get('email')
+            if not recipient_email:
+                failed_recipients.append(str(recipient_data))
+                continue
+            try:
+                sent_status = await cl.make_async(send_gmail_message)(
+                    GMAIL_SERVICE, 'me', recipient_email, "Important Message", email_message
+                )
+                if sent_status:
+                    sent_count += 1
+                    await cl.Message(content=f"✅ Sent to: `{recipient_email}`").send()
+                else:
                     failed_recipients.append(recipient_email)
-                    st.error(f"❌ Error sending to `{recipient_email}`: {e}")
+                    await cl.Message(content=f"❌ Failed to send to: `{recipient_email}`").send()
+            except Exception as e:
+                failed_recipients.append(recipient_email)
+                await cl.Message(content=f"❌ Error sending to `{recipient_email}`: {e}").send()
 
-                progress_bar.progress((i + 1) / len(st.session_state.recipients_list))
+        final_report = f"**Email Sending Complete!**\nSent: {sent_count}\n"
+        if failed_recipients:
+            final_report += "Failed:\n" + "\n".join(f"- {fail}" for fail in failed_recipients)
+        await cl.Message(content=final_report).send()
+        cl.user_session.set("current_email_message", None)
+        cl.user_session.set("recipients_list", [])
+        return
 
-            st.write("---")
-            final_report = f"**Email Sending Complete!**\nSent: {sent_count}\n"
-            if failed_recipients:
-                final_report += "Failed:\n" + "\n".join(f"- {fail}" for fail in failed_recipients)
-            st.markdown(final_report)
+    # If none of the above, prompt user
+    await cl.Message(
+        content="Upload an Excel file with emails, type your message, then type `send emails`."
+    ).send()
 
-            # Reset state after sending
-            st.session_state.current_email_message = ""
-            st.session_state.recipients_list = []
-            st.experimental_rerun() # Rerun to clear inputs and reset the app
 
-if __name__ == "__main__":
-    main()
+    
