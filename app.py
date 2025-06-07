@@ -1,5 +1,6 @@
 import streamlit as st
 import os
+import sys
 from typing import List, Dict, Any, Optional
 
 # Assuming 'models' and 'tools' directories are in the same parent directory as app.py
@@ -66,7 +67,8 @@ def main():
         if st.button("Authenticate Gmail API"):
             if authenticate_gmail():
                 st.session_state.gmail_service = GMAIL_SERVICE_PERSISTENT
-                st.experimental_rerun() # Rerun to show the rest of the app
+                st.rerun()
+# Rerun to show the rest of the app
 
     # Only show the rest of the app if Gmail is authenticated
     if st.session_state.gmail_service:
@@ -186,3 +188,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
