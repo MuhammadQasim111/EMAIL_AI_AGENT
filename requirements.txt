@@ -1,5 +1,5 @@
 # agents-sdk-course-2/email-agent/requirements.txt
-chainlit
+streamlit
 pandas
 openpyxl
 google-api-python-client
